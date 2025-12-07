@@ -1,0 +1,158 @@
+---
+title: "A Time Series Analysis Of Household Energy Usage"
+author: "Jack Keaveny"
+date: "2025-03-17"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+
+# Introduction
+
+ A Time-Series Analysis of Household Energy Usage
+ 
+ Name: Jack Keaveny
+ 
+ Email: jkeaveny@ucsb.edu
+ 
+
+```{r setup, include=FALSE, warning=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(stats)
+library(stats4)
+library(dplyr)
+library(astsa)
+library(readr)
+library(forecast)
+library(tseries)
+library(lubridate)
+
+set.seed(14)
+finaldata <- read.csv("C:/Users/jk3v6/OneDrive/Documents/R Projects/D202.csv")
+```
+
+
+For this project, I chose to work with a data set off of [Kaggle](https://www.kaggle.com/datasets/jaganadhg/house-hold-energy-data?resource=download) containing information on household energy usage across an apartment complex. I really wanted to use this data because I am very interested in rising energy costs and what they could possibly mean for our future. It's very important to be aware of energy usage trends and price changes, especially with patterns of global warming and worldwide population growth.
+
+Some individuals online have performed their own analysis on this data set, but I'm going to be doing a complete ARIMA and Spectral Analysis on this data, give my own 12-month forecast, and hope to come to some sort of conclusion as to whether some sort of pattern can be found. 
+# Data
+
+This data set contains 70.4k observations, each taking place 15 minutes apart starting at 10/26/2016 and ending at 10/23/2018. There are 8 columns. 'TYPE' determines type of energy usage, 'DATE' is the date, 'START.TIME' is the start time of the measurement, 'END.TIME' is the end time of the measurement, 'USAGE' measures energy usage in kWh, 'UNITS' only contains the value kWh, and 'COST' contains the cost of electricity in dollar amount. The data was collected by the author's energy company in their apartment building over the span of two years.
+
+Let's take a quick look at the distributions of usage, our target variable.
+
+```{r, echo=FALSE}
+summary(finaldata$USAGE)
+```
+Nothing seems off here and looking through the rest of the data, it appears cleaned and ready to be modeled.
+
+
+# Methodology
+
+I chose to create a SARIMA (p,d,q) x (P,D,Q) model and a spectral analysis for this data. I chose to do a spectral analysis because it is very useful for analyzing and uncovering seasonal patterns in the data. I strongly suspect that seasonality will be present in this data, so a spectral analysis should give us a clear answer.
+
+Here's a quick look at the time series visual, along with the ACF and PACF. We also want to perform an augmented Dickey-Fuller test to see if any differencing is necessary.
+
+```{r, echo=FALSE}
+energy.ts <- ts(finaldata$USAGE)
+plot(energy.ts, main='Energy Usage Over Time', ylab = 'Energy Usage (kWh)')
+```
+
+```{r, echo=FALSE, results='hide'}
+acf2(energy.ts)
+```
+
+```{r, echo=FALSE, warning=FALSE}
+test <- adf.test(finaldata$USAGE)
+print(test$p.value)
+```
+
+Our data is stationary according to our low p-value and no differencing is needed. For our ACF, we see mounds of spikes every 45 or so lags, clearly indicating some sort of pattern in the data. The PACF is a little harder to interpret with lots of spikes within the first 50 or so lags and then very few past that. We can also observe in our simple time series plot that some sort of recurring pattern may be occurring, but more evidence is needed of course. 
+
+# Modeling and Results
+
+## ARIMA
+
+Now, we are ready to create our ARIMA model. 
+
+```{r, echo=FALSE}
+auto.arima(energy.ts, seasonal = TRUE)
+```
+
+The auto.arima function gave us essentially a random walk model, but I don't think this is correct. Let's use what we observed in the ACF and PACF visuals to help create a better model. 
+
+```{r, echo=FALSE}
+sarima_seasonal <- Arima(energy.ts, order=c(2,0,2), 
+                          seasonal=c(0,1,1,45), method="ML")
+
+summary(sarima_seasonal)
+```
+
+This looks a lot more accurate to what I'd expect. The RMSE and MAE are quite low, indicating a good fit. Given the seasonality in the ACF, I kept D=1 and we know that there is likely an MA process of some sort. On the other hand, the PACF has no clear pattern so the AR process is a bit weaker. I found that P=0 and Q=1 makes for the best ARIMA error statistics. 
+
+Now, we can fit and forecast for this model. 
+
+```{r, echo=FALSE}
+
+# Converting data into ts format
+finaldata$DATE <- as.Date(finaldata$DATE, format="%m/%d/%Y")
+
+# I figured that for this data, it made more sense to compound it by month for this assignment. Given how small the interval between observations is, predicting the next 12 data points wouldn't really give us very information so I'm predicting the next 12 months instead.
+
+monthly_usage <- finaldata %>%
+  group_by(YearMonth = floor_date(DATE, "month")) %>%
+  summarise(TotalUsage = sum(USAGE, na.rm=TRUE))
+
+ts_final <- ts(monthly_usage$TotalUsage, frequency=12, start=c(year(min(finaldata$DATE)), month(min(finaldata$DATE))))
+sarima_model <- auto.arima(ts_final, seasonal=TRUE)
+
+forecast_arima <- forecast(sarima_model, h=12)
+
+library(ggplot2)
+autoplot(forecast_arima) +
+  ggtitle("12-Month Forecast for Electricity Usage") +
+  xlab("Time") +
+  ylab("Electricity Usage (kWh)")
+```
+
+
+Our model's 12-month prediction seems fairly accurate, based on the very apparent pattern in the data. I believe that this seasonality is likely due to the actual changing of seasons. In the winter, people are more likely to heat their homes which requires an immense amount of electricity. We see in this graph that the usage spikes are occurring towards the beginning of each year during winter.
+
+## Spectral Analysis
+
+
+Now, let's commence our spectral analysis.
+
+```{r, echo=FALSE}
+energy_spectrum <- spectrum(energy.ts, plot = FALSE)
+
+plot(energy_spectrum, main="Spectral Density of Energy Usage", 
+     ylab="Spectral Density", xlab="Frequency")
+```
+```{r, echo=FALSE}
+energy_spectrum <- spectrum(energy.ts, plot = FALSE)
+plot(energy_spectrum$freq, energy_spectrum$spec, type='l', 
+     main="Smoothed Spectral Density of Energy Usage", 
+     xlab="Frequency", ylab="Spectral Density")
+```
+
+
+
+```{r, echo=FALSE}
+par(mfrow=c(1, 2)) 
+mvspec(energy.ts, log="no", taper=0.1, main="Raw Periodogram of Energy Usage")
+mvspec(energy.ts, spans=c(5, 5), log="no", taper=0.1, main="Smoothed Periodogram of Energy Usage")
+
+```
+
+
+From our spectral analysis, it is actually a bit harder to tell if there is seasonality present in the data. Based on everything I saw before, I am a bit surprised but I suppose it may make some sense. I was expecting to see seasonal peaks in the spectral density plot, but instead it appears to be caved in at around frequency=0.25.
+
+# Conclusion
+
+In conclusion, while the ARIMA model does indicate potential seasonality, the spectral analysis suggests otherwise, highlighting the complexity of energy usage patterns and the need for careful consideration of the methods used in time series forecasting. I would love to be able to perform further modeling and testing to get to the bottom of this, and I'm curious to hear your thoughts on my results.
+
+Thanks for a great quarter!
